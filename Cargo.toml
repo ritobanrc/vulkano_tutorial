@@ -1,0 +1,10 @@
+[package]
+name = "vulkano_tutorial"
+version = "0.1.0"
+authors = ["Ritoban Roy-Chowdhury <ritobanrc@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+vulkano = "0.11"
+vulkano-shaders = "0.11"
+image = "0.21"
