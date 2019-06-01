@@ -24,36 +24,6 @@ use winit::EventsLoop;
 use winit::WindowBuilder;
 use winit::WindowEvent;
 
-mod vs {
-    vulkano_shaders::shader!{
-        ty: "vertex",
-        src: "
-#version 450
-
-layout(location = 0) in vec2 position;
-
-void main() {
-    gl_Position = vec4(position, 0.0, 1.0);
-}
-"
-    }
-}
-
-mod fs {
-
-    vulkano_shaders::shader!{
-        ty: "fragment",
-        src: "
-#version 450
-layout(location = 0) out vec4 f_color;
-
-void main() {
-    f_color = vec4(0.5, 0.0, 0.0, 1.0);
-}
-"
-    }
-}
-
 struct Vertex {
     position: [f32; 2], 
 }
@@ -164,14 +134,47 @@ fn main() {
     let vertex2 = Vertex { position: [ 0.9,  0.0] };
     let vertex3 = Vertex { position: [ 0.0, -0.9] };
 
-    let vertex4 = Vertex { position: [ 0.9,  0.0] };
-    let vertex5 = Vertex { position: [ 0.0,  0.9] };
-    let vertex6 = Vertex { position: [-0.9,  0.0] };
+    let vertex4 = Vertex { position: [ 0.0,  0.9] };
 
     let vertex_buffer = CpuAccessibleBuffer::from_iter(device.clone(), 
                                                        BufferUsage::vertex_buffer(),
-                                                       vec![vertex1, vertex2, vertex3, vertex4, vertex5, vertex6].into_iter()
+                                                       vec![vertex1, vertex2, vertex3, vertex4].into_iter()
                                                        ).unwrap();
+
+    let index_buffer = CpuAccessibleBuffer::from_iter(device.clone(), BufferUsage::index_buffer(),
+                                                      vec![0, 1, 2, 0, 3, 1].into_iter().map(|x| x as u32)).unwrap();
+
+
+
+    mod vs {
+        vulkano_shaders::shader!{
+            ty: "vertex",
+            src: "
+    #version 450
+
+    layout(location = 0) in vec2 position;
+
+    void main() {
+        gl_Position = vec4(position, 0.0, 1.0);
+    }
+    "
+        }
+    }
+
+    mod fs {
+
+        vulkano_shaders::shader!{
+            ty: "fragment",
+            src: "
+    #version 450
+    layout(location = 0) out vec4 f_color;
+
+    void main() {
+        f_color = vec4(0.5, 0.0, 0.0, 1.0);
+    }
+    "
+        }
+    }
 
     // Step 9: Load the shader
     let vs = vs::Shader::load(device.clone()).expect("failed to create shader module.");
@@ -262,7 +265,7 @@ fn main() {
         // Create the command buffer for this frame
         let command_buffer = AutoCommandBufferBuilder::primary_one_time_submit(device.clone(), queue.family()).unwrap()
             .begin_render_pass(framebuffers[image_num].clone(), false, clear_values).unwrap()
-            .draw(pipeline.clone(), &dynamic_state, vertex_buffer.clone(), (), ()).unwrap()
+            .draw_indexed(pipeline.clone(), &dynamic_state, vertex_buffer.clone(), index_buffer.clone(), (), ()).unwrap()
             .end_render_pass().unwrap()
             .build().unwrap();
 
