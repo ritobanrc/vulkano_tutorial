@@ -14,6 +14,7 @@ use vulkano::buffer::CpuAccessibleBuffer;
 use vulkano::buffer::BufferUsage;
 use vulkano::swapchain;
 use vulkano::swapchain::{SwapchainCreationError, AcquireError};
+use vulkano::swapchain::Surface;
 use vulkano::command_buffer::AutoCommandBufferBuilder;
 use vulkano::command_buffer::DynamicState;
 use vulkano::pipeline::viewport::Viewport;
@@ -24,6 +25,7 @@ use winit::Event;
 use winit::EventsLoop;
 use winit::WindowBuilder;
 use winit::WindowEvent;
+use winit::Window;
 
 struct Vertex {
     position: [f32; 2], 
@@ -73,8 +75,34 @@ impl<'a> VulkanInit<'a> {
 }
 
 fn create_instance() -> Arc<Instance> {
+    // TODO: generalize this to not rendering to a window
     let extentions = vulkano_win::required_extensions();
-    Instance::new(None, &extentions, None) .expect("Failed to create instance.")
+    Instance::new(None, &extentions, None).expect("Failed to create instance.")
+}
+
+struct VulkanWindow {
+    events_loop: EventsLoop,
+    surface: Arc<Surface<Window>>,
+    //window: &'a Window,
+}
+
+impl VulkanWindow {
+    fn create(instance: Arc<Instance>) -> VulkanWindow {
+        // Step 6: Create windows with event loop
+        let events_loop = EventsLoop::new();
+        let surface = WindowBuilder::new().build_vk_surface(&events_loop, instance.clone()).unwrap();
+        //let window = surface.window();
+
+        VulkanWindow {
+            events_loop: events_loop,
+            surface: surface,
+            //window: window
+        }
+    }
+
+    fn window(&self) -> &Window {
+        self.surface.window()
+    }
 }
 
 fn main() {
@@ -84,18 +112,15 @@ fn main() {
     let initializer = VulkanInit::create(&instance);
 
 
-
-    // Step 6: Create windows with event loop
-    let mut events_loop = EventsLoop::new();
-    let surface = WindowBuilder::new().build_vk_surface(&events_loop, instance.clone()).unwrap();
-    let window = surface.window();
+    // Needs to be mutable to poll events loop.
+    let mut window_data = VulkanWindow::create(instance.clone());
 
     // Step 7: get the capabilities of the surface
-    let caps = surface.capabilities(initializer.physical).unwrap();
+    let caps = window_data.surface.capabilities(initializer.physical).unwrap();
 
-    let dimensions = if let Some(dimensions) = window.get_inner_size() {
+    let dimensions = if let Some(dimensions) = window_data.window().get_inner_size() {
         // convert to physical pixels
-        let dimensions: (u32, u32) = dimensions.to_physical(window.get_hidpi_factor()).into();
+        let dimensions: (u32, u32) = dimensions.to_physical(window_data.window().get_hidpi_factor()).into();
         [dimensions.0, dimensions.1]
     } else {
         // The window no longer exists so exit the application.
@@ -106,7 +131,7 @@ fn main() {
     let format = caps.supported_formats[0].0;
 
     // Step 8: Create a swapchain
-    let (mut swapchain, images) = Swapchain::new(initializer.device.clone(), surface.clone(),
+    let (mut swapchain, images) = Swapchain::new(initializer.device.clone(), window_data.surface.clone(),
                                              caps.min_image_count, format, dimensions, 1, caps.supported_usage_flags, &initializer.queue, 
                                              SurfaceTransform::Identity, alpha, PresentMode::Fifo, true, None).unwrap();
 
@@ -230,9 +255,9 @@ fn main() {
         previous_frame_end.cleanup_finished();
 
         if recreate_swapchain {
-            let dimensions = if let Some(dimensions) = window.get_inner_size() {
+            let dimensions = if let Some(dimensions) = window_data.window().get_inner_size() {
                 // convert to physical pixels
-                let dimensions: (u32, u32) = dimensions.to_physical(window.get_hidpi_factor()).into();
+                let dimensions: (u32, u32) = dimensions.to_physical(window_data.window().get_hidpi_factor()).into();
                 [dimensions.0, dimensions.1]
             } else {
                 // The window no longer exists so exit the application.
@@ -318,7 +343,7 @@ fn main() {
 
         // Check if the user wants to close or resize the window.
         let mut done = false;
-        events_loop.poll_events(|event| {
+        window_data.events_loop.poll_events(|event| {
             match event {
                 Event::WindowEvent { event: WindowEvent::CloseRequested, .. } => done = true,
                 Event::WindowEvent { event: WindowEvent::Resized(_), .. } => recreate_swapchain = true,
