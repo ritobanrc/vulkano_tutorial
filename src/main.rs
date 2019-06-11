@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::iter;
 use vulkano::instance::Instance;
 use vulkano::instance::PhysicalDevice;
 use vulkano::device::Device;
@@ -9,10 +10,12 @@ use vulkano::pipeline::GraphicsPipeline;
 use vulkano::framebuffer::Subpass;
 use vulkano::framebuffer::Framebuffer;
 use vulkano::framebuffer::FramebufferAbstract;
+use vulkano::framebuffer::RenderPassAbstract;
 use vulkano::swapchain::{SurfaceTransform, Swapchain, PresentMode};
 use vulkano::buffer::CpuAccessibleBuffer;
 use vulkano::buffer::BufferUsage;
 use vulkano::swapchain;
+use vulkano::image::SwapchainImage;
 use vulkano::swapchain::{SwapchainCreationError, AcquireError};
 use vulkano::swapchain::Surface;
 use vulkano::command_buffer::AutoCommandBufferBuilder;
@@ -32,16 +35,17 @@ struct Vertex {
 }
 
 struct VulkanInit<'a> {
+    //instance: Arc<Instance>,
     physical: PhysicalDevice<'a>,
     device: Arc<Device>,
     queue: Arc<Queue>
 }
 
 impl<'a> VulkanInit<'a> {
-    fn create(instance: &'a Arc<Instance>) -> VulkanInit<'a> {
+    fn create(instance:&'a Arc<Instance>) -> VulkanInit<'a> {
         // Step 2: Find physical device
         // The iterator has the same lifetime as the instance.
-        let physical = PhysicalDevice::enumerate(&instance).next().expect("No physical devices available.");
+        let physical = PhysicalDevice::enumerate(instance).next().expect("No physical devices available.");
 
 
         // Step 3: Find queue families
@@ -82,24 +86,116 @@ fn create_instance() -> Arc<Instance> {
 
 struct VulkanWindow {
     events_loop: EventsLoop,
+    dimensions: [u32; 2],
     surface: Arc<Surface<Window>>,
+    swapchain: Arc<Swapchain<Window>>,
+    //images: Vec<Arc<SwapchainImage<Window>>>,
+    render_pass: Arc<RenderPassAbstract + Send + Sync>,
+    framebuffers: Vec<Arc<FramebufferAbstract + Send + Sync>>
     //window: &'a Window,
 }
 
 impl VulkanWindow {
-    fn create(instance: Arc<Instance>) -> VulkanWindow {
+    fn create(initializer: &VulkanInit, instance: Arc<Instance>) -> VulkanWindow {
         // Step 6: Create windows with event loop
         let events_loop = EventsLoop::new();
         let surface = WindowBuilder::new().build_vk_surface(&events_loop, instance.clone()).unwrap();
         //let window = surface.window();
 
+
+        let (swapchain, images) =        {
+            // Step 7: get the capabilities of the surface
+            let caps = surface.capabilities(initializer.physical).unwrap();
+
+            let dimensions = if let Some(dimensions) = surface.window().get_inner_size() {
+                // convert to physical pixels
+                let dimensions: (u32, u32) = dimensions.to_physical(surface.window().get_hidpi_factor()).into();
+                [dimensions.0, dimensions.1]
+            } else {
+                // The window no longer exists so exit the application.
+                panic!("Unable to get dimension");
+            };
+
+            let alpha = caps.supported_composite_alpha.iter().next().unwrap();
+            let format = caps.supported_formats[0].0;
+
+            // Step 8: Create a swapchain
+            Swapchain::new(initializer.device.clone(), surface.clone(),
+                    caps.min_image_count, format, dimensions, 1, caps.supported_usage_flags, &initializer.queue, 
+                    SurfaceTransform::Identity, alpha, PresentMode::Fifo, true, None).unwrap()
+        };
+
+        // Step 10: Setup render pass
+        let render_pass = Arc::new(vulkano::single_pass_renderpass!(initializer.device.clone(), 
+                                                                    attachments: {
+                                                                        color: {
+                                                                            load: Clear,
+                                                                            store: Store,
+                                                                            format: swapchain.format(),
+                                                                            samples: 1,
+                                                                        }
+                                                                    },
+                                                                    pass: {
+                                                                        color: [color],
+                                                                        depth_stencil: {}
+                                                                    }).unwrap());
+
+
+
+        // Step 13: Create Frame buffers from dynamic state, render passes, and swapchain images
+        let framebuffers = images.iter().map(|image| {
+            Arc::new(
+                Framebuffer::start(render_pass.clone())
+                .add(image.clone()).unwrap()
+                .build().unwrap()) as Arc<FramebufferAbstract + Send + Sync>
+        }).collect::<Vec<_>>();
+
+
         VulkanWindow {
             events_loop: events_loop,
+            dimensions: images[0].dimensions(),
             surface: surface,
+            swapchain: swapchain,
+            render_pass: render_pass,
+            framebuffers: framebuffers,
             //window: window
         }
     }
 
+    fn recreate_swapchain(&mut self) {
+        let dimensions = if let Some(dimensions) = self.window().get_inner_size() {
+            // convert to physical pixels
+            let dimensions: (u32, u32) = dimensions.to_physical(self.window().get_hidpi_factor()).into();
+            [dimensions.0, dimensions.1]
+        } else {
+            // The window no longer exists so exit the application.
+            return;
+        };
+
+
+        // Step 8: Create a swapchain
+        let (new_swapchain, new_images) = match self.swapchain.recreate_with_dimension(dimensions) {
+            Ok(r) => r, 
+            // The user is in the process of resizing or smth. Just keep going. What could possibly go wrong?!
+            Err(SwapchainCreationError::UnsupportedDimensions) => return,
+            Err(err) => panic!("{:?}", err),
+        };
+
+        self.swapchain = new_swapchain;
+
+
+        // Step 13: Create Frame buffers from dynamic state, render passes, and swapchain images
+        self.framebuffers = new_images.iter().map(|image| {
+            Arc::new(
+                Framebuffer::start(self.render_pass.clone())
+                .add(image.clone()).unwrap()
+                .build().unwrap()) as Arc<FramebufferAbstract + Send + Sync>
+        }).collect::<Vec<_>>();
+
+        self.dimensions = new_images[0].dimensions();
+    }
+
+    #[inline(always)]
     fn window(&self) -> &Window {
         self.surface.window()
     }
@@ -113,66 +209,24 @@ fn main() {
 
 
     // Needs to be mutable to poll events loop.
-    let mut window_data = VulkanWindow::create(instance.clone());
-
-    // Step 7: get the capabilities of the surface
-    let caps = window_data.surface.capabilities(initializer.physical).unwrap();
-
-    let dimensions = if let Some(dimensions) = window_data.window().get_inner_size() {
-        // convert to physical pixels
-        let dimensions: (u32, u32) = dimensions.to_physical(window_data.window().get_hidpi_factor()).into();
-        [dimensions.0, dimensions.1]
-    } else {
-        // The window no longer exists so exit the application.
-        panic!("Unable to get dimension");
-    };
-
-    let alpha = caps.supported_composite_alpha.iter().next().unwrap();
-    let format = caps.supported_formats[0].0;
-
-    // Step 8: Create a swapchain
-    let (mut swapchain, images) = Swapchain::new(initializer.device.clone(), window_data.surface.clone(),
-                                             caps.min_image_count, format, dimensions, 1, caps.supported_usage_flags, &initializer.queue, 
-                                             SurfaceTransform::Identity, alpha, PresentMode::Fifo, true, None).unwrap();
-
-
-    // Step 10: Setup render pass
-    let render_pass = Arc::new(vulkano::single_pass_renderpass!(initializer.device.clone(), 
-        attachments: {
-            color: {
-                load: Clear,
-                store: Store,
-                format: swapchain.format(),
-                samples: 1,
-            }
-        },
-        pass: {
-            color: [color],
-            depth_stencil: {}
-        }).unwrap());
+    let mut window_data = VulkanWindow::create(&initializer, instance.clone());
 
 
 
-    // Step 12: Create Dynamic State
-    let mut dynamic_state = {
-        let dims = images[0].dimensions();
-        let viewport =  Viewport {
-            origin: [0.0, 0.0],
-            dimensions: [dims[0] as f32, dims[1] as f32],
-            depth_range: 0.0 .. 1.0
-        };
-        DynamicState {
-            viewports: Some(vec![viewport]), .. DynamicState::none()
-        }
-    };
+    // TODO: Stop using this. 
+    // Step 12: Create Dynamic State 
+    //let mut dynamic_state = {
+        //let dims = images[0].dimensions();
+        //let viewport =  Viewport {
+            //origin: [0.0, 0.0],
+            //dimensions: [dims[0] as f32, dims[1] as f32],
+            //depth_range: 0.0 .. 1.0
+        //};
+        //DynamicState {
+            //viewports: Some(vec![viewport]), .. DynamicState::none()
+        //}
+    //};
 
-    // Step 13: Create Frame buffers from dynamic state, render passes, and swapchain images
-    let mut framebuffers = images.iter().map(|image| {
-        Arc::new(
-            Framebuffer::start(render_pass.clone())
-            .add(image.clone()).unwrap()
-            .build().unwrap()) as Arc<FramebufferAbstract + Send + Sync>
-    }).collect::<Vec<_>>();
     
     // Step 5: Create vertex buffer
     vulkano::impl_vertex!(Vertex, position);
@@ -233,16 +287,24 @@ fn main() {
 
 
     // Step 11: Setup graphics pipeline
-    let pipeline = Arc::new(GraphicsPipeline::start()
-                            .vertex_input_single_buffer::<Vertex>()
-                            .vertex_shader(vs.main_entry_point(), ())
-                            //.triangle_list()
-                            .viewports_dynamic_scissors_irrelevant(1)
-                            .fragment_shader(fs.main_entry_point(), ())
-                            .render_pass(Subpass::from(render_pass.clone(), 0).unwrap())
-                            .build(initializer.device.clone())
-                            .unwrap()
-                            );
+    let mut pipeline = Arc::new(GraphicsPipeline::start()
+                                .vertex_input_single_buffer::<Vertex>()
+                                .vertex_shader(vs.main_entry_point(), ())
+                                .triangle_list()
+                                .viewports_dynamic_scissors_irrelevant(1)
+                                .viewports(iter::once(
+                                        {
+                                            Viewport { origin: [0.0, 0.0], 
+                                                dimensions: [window_data.dimensions[0] as f32, window_data.dimensions[1] as f32],
+                                                depth_range: 0.0 .. 1.0 }
+                                        }
+                                        )
+                                          )
+                                .fragment_shader(fs.main_entry_point(), ())
+                                .render_pass(Subpass::from(window_data.render_pass.clone(), 0).unwrap())
+                                .build(initializer.device.clone())
+                                .unwrap()
+                               );
 
 
     let mut recreate_swapchain = false;
@@ -255,53 +317,33 @@ fn main() {
         previous_frame_end.cleanup_finished();
 
         if recreate_swapchain {
-            let dimensions = if let Some(dimensions) = window_data.window().get_inner_size() {
-                // convert to physical pixels
-                let dimensions: (u32, u32) = dimensions.to_physical(window_data.window().get_hidpi_factor()).into();
-                [dimensions.0, dimensions.1]
-            } else {
-                // The window no longer exists so exit the application.
-                return;
-            };
+            window_data.recreate_swapchain();
+            //swapchain = new_swapchain;
 
-            // Step 8: Create a swapchain
-            let (new_swapchain, new_images) = match swapchain.recreate_with_dimension(dimensions) {
-                Ok(r) => r, 
-                // The user is in the process of resizing or smth. Just keep going. What could possibly go wrong?!
-                Err(SwapchainCreationError::UnsupportedDimensions) => continue,
-                Err(err) => panic!("{:?}", err),
-            };
-
-            swapchain = new_swapchain;
-
-
-            // Step 12: Create Dynamic State
-            dynamic_state = {
-                let dims = new_images[0].dimensions();
-                let viewport =  Viewport {
-                    origin: [0.0, 0.0],
-                    dimensions: [dims[0] as f32, dims[1] as f32],
-                    depth_range: 0.0 .. 1.0
-                };
-                DynamicState {
-                    viewports: Some(vec![viewport]), .. DynamicState::none()
-                }
-            };
-
-            // Step 13: Create Frame buffers from dynamic state, render passes, and swapchain images
-            framebuffers = new_images.iter().map(|image| {
-                Arc::new(
-                    Framebuffer::start(render_pass.clone())
-                    .add(image.clone()).unwrap()
-                    .build().unwrap()) as Arc<FramebufferAbstract + Send + Sync>
-            }).collect::<Vec<_>>();
+            // Step 11: Setup graphics pipeline
+            pipeline = Arc::new(GraphicsPipeline::start()
+                                .vertex_input_single_buffer::<Vertex>()
+                                .vertex_shader(vs.main_entry_point(), ())
+                                .triangle_list()
+                                .viewports_dynamic_scissors_irrelevant(1)
+                                .viewports(iter::once( {
+                                    Viewport { 
+                                        origin: [0.0, 0.0], 
+                                        dimensions: [window_data.dimensions[0] as f32, window_data.dimensions[1] as f32],
+                                        depth_range: 0.0 .. 1.0 }
+                                        }))
+                                .fragment_shader(fs.main_entry_point(), ())
+                                .render_pass(Subpass::from(window_data.render_pass.clone(), 0).unwrap())
+                                .build(initializer.device.clone())
+                                .unwrap()
+                               );
 
             recreate_swapchain = false;
 
         }
 
         // Get the next image in the swapchain.
-        let (image_num, acquire_future) = match swapchain::acquire_next_image(swapchain.clone(), None) {
+        let (image_num, acquire_future) = match swapchain::acquire_next_image(window_data.swapchain.clone(), None) {
             Ok(r) => r,
             Err(AcquireError::OutOfDate) => {
                 recreate_swapchain = true;
@@ -314,15 +356,15 @@ fn main() {
 
         // Create the command buffer for this frame
         let command_buffer = AutoCommandBufferBuilder::primary_one_time_submit(initializer.device.clone(), initializer.queue.family()).unwrap()
-            .begin_render_pass(framebuffers[image_num].clone(), false, clear_values).unwrap()
-            .draw_indexed(pipeline.clone(), &dynamic_state, vertex_buffer.clone(), index_buffer.clone(), (), ()).unwrap()
+            .begin_render_pass(window_data.framebuffers[image_num].clone(), false, clear_values).unwrap()
+            .draw_indexed(pipeline.clone(), &DynamicState::none(), vertex_buffer.clone(), index_buffer.clone(), (), ()).unwrap()
             .end_render_pass().unwrap()
             .build().unwrap();
 
         // Execute the commands in the command buffer, Present the image in the swapchain
         let future = previous_frame_end.join(acquire_future)
             .then_execute(initializer.queue.clone(), command_buffer).unwrap()
-            .then_swapchain_present(initializer.queue.clone(), swapchain.clone(), image_num)
+            .then_swapchain_present(initializer.queue.clone(), window_data.swapchain.clone(), image_num)
             .then_signal_fence_and_flush();
 
         // If it worked, the previous frame is now this frame. Otherwise, log the error and set the
