@@ -15,7 +15,6 @@ use vulkano::swapchain::{SurfaceTransform, Swapchain, PresentMode};
 use vulkano::buffer::CpuAccessibleBuffer;
 use vulkano::buffer::BufferUsage;
 use vulkano::swapchain;
-use vulkano::image::SwapchainImage;
 use vulkano::swapchain::{SwapchainCreationError, AcquireError};
 use vulkano::swapchain::Surface;
 use vulkano::command_buffer::AutoCommandBufferBuilder;
@@ -29,6 +28,7 @@ use winit::EventsLoop;
 use winit::WindowBuilder;
 use winit::WindowEvent;
 use winit::Window;
+use winit::dpi::LogicalSize;
 
 struct Vertex {
     position: [f32; 2], 
@@ -99,7 +99,11 @@ impl VulkanWindow {
     fn create(initializer: &VulkanInit, instance: Arc<Instance>) -> VulkanWindow {
         // Step 6: Create windows with event loop
         let events_loop = EventsLoop::new();
-        let surface = WindowBuilder::new().build_vk_surface(&events_loop, instance.clone()).unwrap();
+        let surface = WindowBuilder::new()
+            .with_title("Vulkano Experiments")
+            .with_dimensions(LogicalSize::new(600.0, 600.0))
+            //.with_resizable(false)
+            .build_vk_surface(&events_loop, instance.clone()).unwrap();
         //let window = surface.window();
 
 
@@ -211,23 +215,6 @@ fn main() {
     // Needs to be mutable to poll events loop.
     let mut window_data = VulkanWindow::create(&initializer, instance.clone());
 
-
-
-    // TODO: Stop using this. 
-    // Step 12: Create Dynamic State 
-    //let mut dynamic_state = {
-        //let dims = images[0].dimensions();
-        //let viewport =  Viewport {
-            //origin: [0.0, 0.0],
-            //dimensions: [dims[0] as f32, dims[1] as f32],
-            //depth_range: 0.0 .. 1.0
-        //};
-        //DynamicState {
-            //viewports: Some(vec![viewport]), .. DynamicState::none()
-        //}
-    //};
-
-    
     // Step 5: Create vertex buffer
     vulkano::impl_vertex!(Vertex, position);
 
