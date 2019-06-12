@@ -1,208 +1,35 @@
+mod vulkan_init;
+mod vulkan_window;
+
 use std::sync::Arc;
 use std::iter;
 use vulkano::instance::Instance;
-use vulkano::instance::PhysicalDevice;
-use vulkano::device::Device;
-use vulkano::device::Queue;
-use vulkano::device::DeviceExtensions;
-use vulkano::device::Features;
 use vulkano::pipeline::GraphicsPipeline;
 use vulkano::framebuffer::Subpass;
-use vulkano::framebuffer::Framebuffer;
-use vulkano::framebuffer::FramebufferAbstract;
-use vulkano::framebuffer::RenderPassAbstract;
-use vulkano::swapchain::{SurfaceTransform, Swapchain, PresentMode};
 use vulkano::buffer::CpuAccessibleBuffer;
 use vulkano::buffer::BufferUsage;
 use vulkano::swapchain;
-use vulkano::swapchain::{SwapchainCreationError, AcquireError};
-use vulkano::swapchain::Surface;
+use vulkano::swapchain::AcquireError;
 use vulkano::command_buffer::AutoCommandBufferBuilder;
 use vulkano::command_buffer::DynamicState;
 use vulkano::pipeline::viewport::Viewport;
 use vulkano::sync;
 use vulkano::sync::{GpuFuture, FlushError};
-use vulkano_win::VkSurfaceBuild;
 use winit::Event;
-use winit::EventsLoop;
-use winit::WindowBuilder;
 use winit::WindowEvent;
-use winit::Window;
-use winit::dpi::LogicalSize;
+
+use vulkan_window::VulkanWindow;
+use vulkan_init::VulkanInit;
+
 
 struct Vertex {
     position: [f32; 2], 
-}
-
-struct VulkanInit<'a> {
-    //instance: Arc<Instance>,
-    physical: PhysicalDevice<'a>,
-    device: Arc<Device>,
-    queue: Arc<Queue>
-}
-
-impl<'a> VulkanInit<'a> {
-    fn create(instance:&'a Arc<Instance>) -> VulkanInit<'a> {
-        // Step 2: Find physical device
-        // The iterator has the same lifetime as the instance.
-        let physical = PhysicalDevice::enumerate(instance).next().expect("No physical devices available.");
-
-
-        // Step 3: Find queue families
-        for family in physical.queue_families() {
-            println!("Found a queue family with {:?} queues", family.queues_count());
-        }
-
-        let queue_family = physical.queue_families()
-            .find(|&q| q.supports_graphics())
-            .expect("Couldn't find a graphical queue family.");
-
-        // Step 4: Create Device and queue. 
-        let (device, mut queues) = {
-            let device_ext = DeviceExtensions  {
-                khr_swapchain: true,
-                .. DeviceExtensions::none()
-            };
-            Device::new(physical, &Features::none(), &device_ext, 
-                        [(queue_family, 0.5)].iter().cloned())
-                .expect("Failed to create device.")
-        };
-
-        let queue = queues.next().unwrap();
-
-        VulkanInit { 
-            physical: physical,
-            device: device,
-            queue: queue
-        }
-    }
 }
 
 fn create_instance() -> Arc<Instance> {
     // TODO: generalize this to not rendering to a window
     let extentions = vulkano_win::required_extensions();
     Instance::new(None, &extentions, None).expect("Failed to create instance.")
-}
-
-struct VulkanWindow {
-    events_loop: EventsLoop,
-    dimensions: [u32; 2],
-    surface: Arc<Surface<Window>>,
-    swapchain: Arc<Swapchain<Window>>,
-    //images: Vec<Arc<SwapchainImage<Window>>>,
-    render_pass: Arc<RenderPassAbstract + Send + Sync>,
-    framebuffers: Vec<Arc<FramebufferAbstract + Send + Sync>>
-    //window: &'a Window,
-}
-
-impl VulkanWindow {
-    fn create(initializer: &VulkanInit, instance: Arc<Instance>) -> VulkanWindow {
-        // Step 6: Create windows with event loop
-        let events_loop = EventsLoop::new();
-        let surface = WindowBuilder::new()
-            .with_title("Vulkano Experiments")
-            .with_dimensions(LogicalSize::new(600.0, 600.0))
-            //.with_resizable(false)
-            .build_vk_surface(&events_loop, instance.clone()).unwrap();
-        //let window = surface.window();
-
-
-        let (swapchain, images) =        {
-            // Step 7: get the capabilities of the surface
-            let caps = surface.capabilities(initializer.physical).unwrap();
-
-            let dimensions = if let Some(dimensions) = surface.window().get_inner_size() {
-                // convert to physical pixels
-                let dimensions: (u32, u32) = dimensions.to_physical(surface.window().get_hidpi_factor()).into();
-                [dimensions.0, dimensions.1]
-            } else {
-                // The window no longer exists so exit the application.
-                panic!("Unable to get dimension");
-            };
-
-            let alpha = caps.supported_composite_alpha.iter().next().unwrap();
-            let format = caps.supported_formats[0].0;
-
-            // Step 8: Create a swapchain
-            Swapchain::new(initializer.device.clone(), surface.clone(),
-                    caps.min_image_count, format, dimensions, 1, caps.supported_usage_flags, &initializer.queue, 
-                    SurfaceTransform::Identity, alpha, PresentMode::Fifo, true, None).unwrap()
-        };
-
-        // Step 10: Setup render pass
-        let render_pass = Arc::new(vulkano::single_pass_renderpass!(initializer.device.clone(), 
-                                                                    attachments: {
-                                                                        color: {
-                                                                            load: Clear,
-                                                                            store: Store,
-                                                                            format: swapchain.format(),
-                                                                            samples: 1,
-                                                                        }
-                                                                    },
-                                                                    pass: {
-                                                                        color: [color],
-                                                                        depth_stencil: {}
-                                                                    }).unwrap());
-
-
-
-        // Step 13: Create Frame buffers from dynamic state, render passes, and swapchain images
-        let framebuffers = images.iter().map(|image| {
-            Arc::new(
-                Framebuffer::start(render_pass.clone())
-                .add(image.clone()).unwrap()
-                .build().unwrap()) as Arc<FramebufferAbstract + Send + Sync>
-        }).collect::<Vec<_>>();
-
-
-        VulkanWindow {
-            events_loop: events_loop,
-            dimensions: images[0].dimensions(),
-            surface: surface,
-            swapchain: swapchain,
-            render_pass: render_pass,
-            framebuffers: framebuffers,
-            //window: window
-        }
-    }
-
-    fn recreate_swapchain(&mut self) {
-        let dimensions = if let Some(dimensions) = self.window().get_inner_size() {
-            // convert to physical pixels
-            let dimensions: (u32, u32) = dimensions.to_physical(self.window().get_hidpi_factor()).into();
-            [dimensions.0, dimensions.1]
-        } else {
-            // The window no longer exists so exit the application.
-            return;
-        };
-
-
-        // Step 8: Create a swapchain
-        let (new_swapchain, new_images) = match self.swapchain.recreate_with_dimension(dimensions) {
-            Ok(r) => r, 
-            // The user is in the process of resizing or smth. Just keep going. What could possibly go wrong?!
-            Err(SwapchainCreationError::UnsupportedDimensions) => return,
-            Err(err) => panic!("{:?}", err),
-        };
-
-        self.swapchain = new_swapchain;
-
-
-        // Step 13: Create Frame buffers from dynamic state, render passes, and swapchain images
-        self.framebuffers = new_images.iter().map(|image| {
-            Arc::new(
-                Framebuffer::start(self.render_pass.clone())
-                .add(image.clone()).unwrap()
-                .build().unwrap()) as Arc<FramebufferAbstract + Send + Sync>
-        }).collect::<Vec<_>>();
-
-        self.dimensions = new_images[0].dimensions();
-    }
-
-    #[inline(always)]
-    fn window(&self) -> &Window {
-        self.surface.window()
-    }
 }
 
 fn main() {
