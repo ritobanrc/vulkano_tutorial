@@ -24,6 +24,7 @@ use vulkan_init::VulkanInit;
 
 struct Vertex {
     position: [f32; 2], 
+    color: [f32; 4]
 }
 
 fn create_instance() -> Arc<Instance> {
@@ -43,13 +44,13 @@ fn main() {
     let mut window_data = VulkanWindow::create(&initializer, instance.clone());
 
     // Step 5: Create vertex buffer
-    vulkano::impl_vertex!(Vertex, position);
+    vulkano::impl_vertex!(Vertex, position, color);
 
-    let vertex1 = Vertex { position: [-0.9,  0.0] };
-    let vertex2 = Vertex { position: [ 0.9,  0.0] };
-    let vertex3 = Vertex { position: [ 0.0, -0.9] };
+    let vertex1 = Vertex { position: [-0.9,  0.0], color: [0.8, 0.2, 0.2, 1.0] };
+    let vertex2 = Vertex { position: [ 0.9,  0.0], color: [0.2, 0.8, 0.2, 1.0] };
+    let vertex3 = Vertex { position: [ 0.0, -0.9], color: [0.2, 0.2, 0.8, 1.0] };
 
-    let vertex4 = Vertex { position: [ 0.0,  0.9] };
+    let vertex4 = Vertex { position: [ 0.0,  0.9], color: [0.8, 0.8, 0.2, 1.0] };
 
     let vertex_buffer = CpuAccessibleBuffer::from_iter(initializer.device.clone(), 
                                                        BufferUsage::vertex_buffer(),
@@ -68,11 +69,12 @@ fn main() {
     #version 450
 
     layout(location = 0) in vec2 position;
-    layout(location = 0) out vec3 v_color;
+    layout(location = 1) in vec4 color;
+    layout(location = 0) out vec4 v_color;
 
 
     void main() {
-        v_color = vec3(0.5*position + 0.5, 0.5);
+        v_color = color;
         gl_Position = vec4(position, 0.0, 1.0);
     }
     "
@@ -85,11 +87,11 @@ fn main() {
             ty: "fragment",
             src: "
     #version 450
-    layout(location = 0) in vec3 v_color;
+    layout(location = 0) in vec4 v_color;
     layout(location = 0) out vec4 f_color;
 
     void main() {
-        f_color = vec4(v_color, 1.0);
+        f_color = v_color;
     }
     "
         }
